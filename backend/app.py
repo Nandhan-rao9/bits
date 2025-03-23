@@ -14,8 +14,6 @@ from predict_models import predict_with_saved_models, generate_recommendations_f
 # Configuration constants
 FLASK_ENV = 'development'
 FLASK_APP = 'app.py'
-OPENAI_API_KEY = "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"
-USDA_API_KEY = "AI9n8m1jSve9fzERZEq7jAt4VaapcZHL5qJGAC6i"
 MONGO_URI = "mongodb+srv://nandhanrao99:NandhanRao@cluster0.xaxer.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
 
 app = Flask(__name__)
