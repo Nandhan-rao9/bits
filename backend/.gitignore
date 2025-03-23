@@ -1,0 +1,6 @@
+# Ignore the entire virtual environment
+backend/venv/
+
+# OR, if you want to be specific, ignore just the large files
+backend/venv/Lib/site-packages/clang/native/libclang.dll
+backend/venv/Lib/site-packages/tensorflow/python/_pywrap_tensorflow_internal.pyd
