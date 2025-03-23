@@ -8,6 +8,7 @@ import { Visualizations } from "./pages/Visualizations";
 import { NutritionProvider } from "./context/NutritionContext";
 import { NutritionRiskAssessment } from "./components/NutritionRiskAssessment"
 import Chatbot from "./components/Chatbot";
+import { FoodIngredientAnalyzer } from "./pages/FoodIngredientAnalyser";
 
 function App() {
   return (
@@ -21,6 +22,7 @@ function App() {
             <Route path="/profile" element={<Profile />} />
             <Route path="/chatbot" element={<Chatbot />}></Route>
             <Route path="/nutrition-risk" element={<NutritionRiskAssessment />}></Route>
+            <Route path="/food-analyzer" element={<FoodIngredientAnalyzer />} />
           </Routes>
         </Layout>
       </NutritionProvider>

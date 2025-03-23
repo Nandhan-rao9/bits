@@ -2,18 +2,26 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import requests
 import os
-import pandas as pd
-import numpy as np
+import re
 from datetime import datetime
 from openai import OpenAI
 import base64
 from pymongo import MongoClient
 import json
-from predict_models import predict_with_saved_models, generate_recommendations_from_saved_models, get_default_food_sources
+from predict_models import predict_with_saved_models, generate_recommendations_from_saved_models, get_default_food_sources, display_recommendations
+import pandas as pd
+import traceback
+import logging
+
+# Set up logging
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
 
 # Configuration constants
 FLASK_ENV = 'development'
 FLASK_APP = 'app.py'
+OPENAI_API_KEY = "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"
+USDA_API_KEY = "AI9n8m1jSve9fzERZEq7jAt4VaapcZHL5qJGAC6i"
 MONGO_URI = "mongodb+srv://nandhanrao99:NandhanRao@cluster0.xaxer.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
 
 app = Flask(__name__)
@@ -31,31 +39,21 @@ db = client['nutrition_db']
 food_collection = db['food_data']
 total_nutrients_collection = db['total_nutrients']
 
-# Add a new endpoint to your Flask app
 @app.route('/predict', methods=['POST'])
 def predict_nutrition_risk():
     """Endpoint for nutrition risk assessment using saved models"""
     try:
-        # Get nutrition data from request
         data = request.get_json()
         nutrition_data = pd.DataFrame(data['nutrition_data'])
-        
-        # Directory containing saved models
         models_dir = "saved_models"
-        
-        # Make predictions
         predictions = predict_with_saved_models(nutrition_data, models_dir)
         
         if predictions is None:
             return jsonify({'error': 'Failed to generate predictions. Models may not be available.'}), 500
         
-        # Convert predictions to a format suitable for JSON response
         predictions_json = predictions.to_dict(orient='records')
-        
-        # Generate recommendations
         recommendations = generate_recommendations_from_saved_models(nutrition_data, models_dir)
         
-        # Format recommendations for response
         formatted_recommendations = {}
         if recommendations:
             for nutrient, data in recommendations.items():
@@ -66,7 +64,6 @@ def predict_nutrition_risk():
                     'importance': float(data['importance'])
                 }
         
-        # Get food sources
         food_sources = get_default_food_sources()
         
         return jsonify({
@@ -76,7 +73,10 @@ def predict_nutrition_risk():
         }), 200
         
     except Exception as e:
+        logger.error(f"Error in predict_nutrition_risk: {str(e)}")
         return jsonify({'error': str(e)}), 500
+
+user_nutritional_data = {'food_items': []}
 
 class ImageAnalyzer:
     def __init__(self, api_key):
@@ -87,19 +87,26 @@ class ImageAnalyzer:
         image_data = image_file.read()
         return base64.b64encode(image_data).decode('utf-8')
 
-    def analyze_image_ML(self, image_file, prompt="What food items are in this image? Please list them separately as comma separated values , just identify the eatables and if the food has any harmful products give a warning message"):
+    def analyze_image_ML(self, image_file, prompt="What food items are in this image? Please list them separately."):
         """Analyze an image using OpenAI's Vision API."""
         try:
             base64_image = self.encode_image(image_file)
             response = self.client.chat.completions.create(
                 model="gpt-4o",
-                messages=[{
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
-                    ]
-                }],
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/jpeg;base64,{base64_image}"
+                                }
+                            }
+                        ]
+                    }
+                ],
                 max_tokens=300
             )
             return response.choices[0].message.content
@@ -110,15 +117,20 @@ def get_food_info_from_usda(food_name):
     """Fetch food information from USDA API"""
     try:
         search_url = f"{USDA_BASE_URL}/foods/search"
-        params = {'api_key': USDA_API_KEY, 'query': food_name, 'dataType': ["Survey (FNDDS)"], 'pageSize': 1}
+        params = {
+            'api_key': USDA_API_KEY,
+            'query': food_name,
+            'dataType': ["Survey (FNDDS)"],
+            'pageSize': 1
+        }
         response = requests.get(search_url, params=params)
         response.raise_for_status()
-
+        
         data = response.json()
         if data['foods']:
             food = data['foods'][0]
             nutrients = food.get('foodNutrients', [])
-
+            
             nutrition_info = {
                 'calories': next((n['value'] for n in nutrients if n['nutrientName'] == 'Energy'), 0),
                 'protein': next((n['value'] for n in nutrients if n['nutrientName'] == 'Protein'), 0),
@@ -137,18 +149,147 @@ def get_food_info_from_usda(food_name):
                     'potassium': next((n['value'] for n in nutrients if 'Potassium' in n['nutrientName']), 0)
                 }
             }
-
             return nutrition_info
         return None
     except requests.exceptions.RequestException as e:
-        print(f"Error fetching USDA data: {e}")
+        logger.error(f"Error fetching USDA data: {e}")
         return None
+
+@app.route('/analyze-ingredients', methods=['POST'])
+def analyze_ingredients():
+    """Endpoint for ingredient list analysis"""
+    if 'image' not in request.files:
+        logger.warning("No image provided in request")
+        return jsonify({'error': 'No image provided'}), 400
+    
+    try:
+        image_file = request.files['image']
+        logger.info(f"Received image: {image_file.filename}")
+        
+        bytes_data = image_file.read()
+        logger.info(f"Read {len(bytes_data)} bytes of image data")
+        if not bytes_data or len(bytes_data) == 0:
+            logger.error("Empty image file received")
+            return jsonify({'error': 'Empty image file received'}), 400
+
+        class IngredientAnalyzer:
+            def __init__(self, api_key):
+                self.client = OpenAI(api_key=api_key)
+
+            def encode_image(self, image_bytes):
+                try:
+                    return base64.b64encode(image_bytes).decode('utf-8')
+                except Exception as e:
+                    logger.error(f"Image encoding error: {str(e)}")
+                    raise
+
+            def analyze_image(self, image_bytes):
+                prompt = """
+                You are a food safety expert. Analyze the ingredient list in this image and return a response in **valid JSON format only**. Do not include markdown, explanations, or any text outside the JSON structure. If no ingredients are detected or the image is unclear, return an empty JSON object `{}`. Use this exact structure:
+                {
+                    "harmful_ingredients": [
+                        {
+                            "name": "ingredient name",
+                            "effects": "specific health effects and concerns",
+                            "banned_countries": ["country1", "country2"],
+                            "usage_restrictions": "specific usage restrictions in food items globally"
+                        }
+                    ],
+                    "artificial_additives": {
+                        "emulsifiers": [
+                            {
+                                "code": "E-number or other code",
+                                "name": "emulsifier name",
+                                "effects": "health effects and concerns",
+                                "banned_countries": ["country1", "country2"],
+                                "usage_restrictions": "specific usage restrictions in food items globally"
+                            }
+                        ],
+                        "glazing_agents": [],
+                        "colors": [],
+                        "other": []
+                    },
+                    "preservatives": [],
+                    "artificial_flavors": [],
+                    "overall_assessment": {
+                        "risk_level": "low/moderate/high",
+                        "summary": "detailed summary of overall product safety and concerns",
+                        "recommendations": ["specific recommendations for consumers"]
+                    }
+                }
+                """
+                try:
+                    base64_image = self.encode_image(image_bytes)
+                    logger.info("Image encoded successfully, sending to OpenAI API")
+                    
+                    response = self.client.chat.completions.create(
+                        model="gpt-4o",
+                        messages=[
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "text", "text": prompt},
+                                    {
+                                        "type": "image_url",
+                                        "image_url": {
+                                            "url": f"data:image/jpeg;base64,{base64_image}",
+                                            "detail": "high"
+                                        }
+                                    }
+                                ]
+                            }
+                        ],
+                        max_tokens=1500,
+                        temperature=0.5
+                    )
+                    raw_response = response.choices[0].message.content
+                    logger.info(f"Raw OpenAI response: {raw_response[:100]}...")
+                    return raw_response
+                except Exception as e:
+                    logger.error(f"OpenAI API error: {str(e)}")
+                    raise Exception(f"Error analyzing image with OpenAI: {str(e)}")
+
+        def clean_json_response(response_text):
+            """Clean the API response to ensure valid JSON."""
+            logger.debug(f"Original response: {response_text[:100]}...")
+            # Remove markdown or unexpected formatting
+            response_text = re.sub(r'```(?:json)?', '', response_text)
+            response_text = re.sub(r'```', '', response_text).strip()
+            # If it’s not JSON, return an empty object as fallback
+            if not response_text.startswith('{') or not response_text.endswith('}'):
+                logger.warning("Response is not valid JSON, returning empty object")
+                return '{}'
+            return response_text
+        
+        logger.info("Creating analyzer")
+        analyzer = IngredientAnalyzer(OPENAI_API_KEY)
+        logger.info("Analyzing image")
+        analysis_result = analyzer.analyze_image(bytes_data)
+        
+        if not analysis_result:
+            logger.error("No analysis result returned")
+            return jsonify({'error': 'Failed to analyze image - no result received'}), 500
+        
+        logger.info("Cleaning JSON response")
+        cleaned_response = clean_json_response(analysis_result)
+        try:
+            result = json.loads(cleaned_response)
+            logger.info("JSON parsed successfully")
+            return jsonify(result)
+        except json.JSONDecodeError as e:
+            logger.error(f"JSON parsing error after cleaning: {str(e)}")
+            return jsonify({'error': 'Failed to parse analysis result', 'raw_response': analysis_result}), 500
+    
+    except Exception as e:
+        logger.error(f"Unexpected error in analyze_ingredients: {str(e)}")
+        logger.error(traceback.format_exc())
+        return jsonify({'error': f"Server error: {str(e)}", 'stack_trace': traceback.format_exc()}), 500
 
 class MentalHealthChatbot:
     def __init__(self, api_key: str):
         self.client = OpenAI(api_key=api_key)
         self.system_prompt = """
-        You are a compassionate and professional mental health expert. Your role is to:
+        You are a compassionate and professional health expert. Your role is to:
         1. Listen to the user's concerns with empathy and understanding.
         2. Offer emotional validation and reassurance.
         3. Provide coping strategies and self-care techniques.
@@ -227,6 +368,7 @@ class MentalHealthChatbot:
 def analyze_image():
     """Endpoint for image analysis"""
     if 'image' not in request.files:
+        logger.warning("No image provided in analyze-image request")
         return jsonify({'error': 'No image provided'}), 400
     
     try:
@@ -253,9 +395,11 @@ def analyze_image():
                     'warnings': warnings
                 }
                 results.append(food_data)
+                user_nutritional_data['food_items'].append(food_data)
 
         return jsonify(results)
     except Exception as e:
+        logger.error(f"Error in analyze_image: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/commit', methods=['POST'])
@@ -278,21 +422,21 @@ def commit_nutrition_data():
 
         return jsonify({'message': 'Nutrition data successfully committed to MongoDB!'}), 200
     except Exception as e:
+        logger.error(f"Error in commit_nutrition_data: {str(e)}")
         return jsonify({'error': 'Failed to commit nutrition data. Please try again.'}), 500
 
 @app.route('/getnutrition', methods=['GET'])
 def get_nutrition_data():
     """Endpoint to get nutrition data from MongoDB"""
     try:
-        total_nutrients = list(total_nutrients_collection.find().sort('timestamp', -1).limit(1))
+        total_nutrients = total_nutrients_collection.find().sort('timestamp', -1).limit(1)
         if total_nutrients:
-            # Extract and flatten the structure
-            result = total_nutrients[0]['total_nutrients']
-            return jsonify([result]), 200
+            return jsonify([doc['total_nutrients'] for doc in total_nutrients]), 200
         else:
             return jsonify({'message': 'No nutrition data available'}), 404
     except Exception as e:
-        return jsonify({'error': f'Failed to fetch nutrition data: {str(e)}'}), 500
+        logger.error(f"Error in get_nutrition_data: {str(e)}")
+        return jsonify({'error': 'Failed to fetch nutrition data. Please try again.'}), 500
 
 @app.route('/chat', methods=['POST'])
 def chat():

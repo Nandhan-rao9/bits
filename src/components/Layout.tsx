@@ -17,6 +17,7 @@ export const Layout = ({ children }: { children: React.ReactNode }) => {
     { to: "/visualizations", icon: PieChart, label: "Visualizations" },
     { to: "./chatbot", icon: MessageCircle, label: "chatbot" },
     { to: "/profile", icon: User, label: "Profile" },
+    { to: "/nutrition-risk", icon: User, label: "risk" }
   ];
 
   return (
